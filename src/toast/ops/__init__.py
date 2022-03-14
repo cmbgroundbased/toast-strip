@@ -36,6 +36,7 @@ from .noise_weight import NoiseWeight
 from .operator import Operator
 from .pipeline import Pipeline
 from .pixels_healpix import PixelsHealpix
+from .pixels_wcs import PixelsWCS
 from .pointing import BuildPixelDistribution
 from .pointing_detector import PointingDetectorSimple
 from .polyfilter import CommonModeFilter, PolyFilter, PolyFilter2D

@@ -167,6 +167,7 @@ def test(name=None, verbosity=2):
         suite.addTest(loader.loadTestsFromModule(test_ops_sim_ground))
         suite.addTest(loader.loadTestsFromModule(test_ops_memory_counter))
         suite.addTest(loader.loadTestsFromModule(test_ops_pointing_healpix))
+        suite.addTest(loader.loadTestsFromModule(test_ops_pointing_wcs))
         suite.addTest(loader.loadTestsFromModule(test_ops_sim_tod_noise))
         suite.addTest(loader.loadTestsFromModule(test_ops_sim_tod_dipole))
         suite.addTest(loader.loadTestsFromModule(test_ops_sim_tod_atm))

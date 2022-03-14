@@ -53,6 +53,7 @@ install(FILES
     demodulation.py
     stokes_weights.py
     pixels_healpix.py
+    pixels_wcs.py
     filterbin.py
     save_hdf5.py
     load_hdf5.py
