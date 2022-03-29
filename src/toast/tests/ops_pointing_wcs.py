@@ -26,6 +26,7 @@ from ._helpers import (
     create_ground_data,
     create_comm,
     create_space_telescope,
+    create_fake_sky,
 )
 
 from .mpi import MPITestCase
@@ -107,3 +108,22 @@ class PointingWCSTest(MPITestCase):
             detector_pointing=detpointing_radec,
             use_astropy=True,
         )
+
+        weights = ops.StokesWeights(
+            mode="IQU",
+            hwp_angle=defaults.hwp_angle,
+            detector_pointing=detpointing,
+        )
+        weights.apply(data)
+
+        # Create fake polarized sky pixel values locally
+        create_fake_sky(data, "pixel_dist", "fake_map")
+
+        # Scan map into timestreams
+        scanner = ops.ScanMap(
+            det_data=defaults.det_data,
+            pixels=pixels.pixels,
+            weights=weights.weights,
+            map_key="fake_map",
+        )
+        scanner.apply(data)

@@ -230,6 +230,8 @@ class PixelsWCS(Operator):
         self.pix_dec = int(np.round(2 * self.wcs.wcs.crpix[1] - 1))
         self._n_pix = self.pix_ra * self.pix_dec
         self._n_pix_submap = self._n_pix // self.submaps
+        if self._n_pix_submap * self.submaps < self._n_pix:
+            self._n_pix_submap += 1
         self._local_submaps = None
 
     @function_timer
@@ -241,7 +243,7 @@ class PixelsWCS(Operator):
             raise RuntimeError("The detector_pointing trait must be set")
 
         if self._local_submaps is None and self.create_dist is not None:
-            self._local_submaps = np.zeros(self._n_submap, dtype=np.bool)
+            self._local_submaps = np.zeros(self.submaps, dtype=np.bool)
 
         if not self.use_astropy:
             raise NotImplementedError("Only astropy conversion is currently supported")
@@ -341,17 +343,17 @@ class PixelsWCS(Operator):
         if self.create_dist is not None:
             submaps = None
             if self.single_precision:
-                submaps = np.arange(self._n_submap, dtype=np.int32)[
+                submaps = np.arange(self.submaps, dtype=np.int32)[
                     self._local_submaps == 1
                 ]
             else:
-                submaps = np.arange(self._n_submap, dtype=np.int64)[
+                submaps = np.arange(self.submaps, dtype=np.int64)[
                     self._local_submaps == 1
                 ]
 
             data[self.create_dist] = PixelDistribution(
                 n_pix=self._n_pix,
-                n_submap=self._n_submap,
+                n_submap=self.submaps,
                 local_submaps=submaps,
                 comm=data.comm.comm_world,
             )
