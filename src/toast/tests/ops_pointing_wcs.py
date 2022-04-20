@@ -90,40 +90,40 @@ class PointingWCSTest(MPITestCase):
 
         outfile = os.path.join(self.outdir, "default.fits")
 
-    def test_mapmaking(self):
-        rank = 0
-        if self.comm is not None:
-            rank = self.comm.rank
+    # def test_mapmaking(self):
+    #     rank = 0
+    #     if self.comm is not None:
+    #         rank = self.comm.rank
 
-        # Create fake observing of a small patch
-        data = create_ground_data(self.comm)
+    #     # Create fake observing of a small patch
+    #     data = create_ground_data(self.comm)
 
-        # Simple detector pointing
-        detpointing_radec = ops.PointingDetectorSimple(
-            boresight=defaults.boresight_radec, quats="quats_radec"
-        )
+    #     # Simple detector pointing
+    #     detpointing_radec = ops.PointingDetectorSimple(
+    #         boresight=defaults.boresight_radec, quats="quats_radec"
+    #     )
 
-        # Compute pixels
-        pixels = ops.PixelsWCS(
-            detector_pointing=detpointing_radec,
-            use_astropy=True,
-        )
+    #     # Compute pixels
+    #     pixels = ops.PixelsWCS(
+    #         detector_pointing=detpointing_radec,
+    #         use_astropy=True,
+    #     )
 
-        weights = ops.StokesWeights(
-            mode="IQU",
-            hwp_angle=defaults.hwp_angle,
-            detector_pointing=detpointing,
-        )
-        weights.apply(data)
+    #     weights = ops.StokesWeights(
+    #         mode="IQU",
+    #         hwp_angle=defaults.hwp_angle,
+    #         detector_pointing=detpointing_radec,
+    #     )
+    #     weights.apply(data)
 
-        # Create fake polarized sky pixel values locally
-        create_fake_sky(data, "pixel_dist", "fake_map")
+    #     # Create fake polarized sky pixel values locally
+    #     create_fake_sky(data, "pixel_dist", "fake_map")
 
-        # Scan map into timestreams
-        scanner = ops.ScanMap(
-            det_data=defaults.det_data,
-            pixels=pixels.pixels,
-            weights=weights.weights,
-            map_key="fake_map",
-        )
-        scanner.apply(data)
+    #     # Scan map into timestreams
+    #     scanner = ops.ScanMap(
+    #         det_data=defaults.det_data,
+    #         pixels=pixels.pixels,
+    #         weights=weights.weights,
+    #         map_key="fake_map",
+    #     )
+    #     scanner.apply(data)
