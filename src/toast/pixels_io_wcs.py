@@ -5,11 +5,116 @@
 import os
 
 import numpy as np
-import astropy.io.fits as af
+import pixell
+import pixell.enmap
 
 from .timing import function_timer, Timer
 from .mpi import MPI, use_mpi
 from .utils import Logger, memreport
+
+
+def submap_to_enmap(dist, submap, sdata, endata):
+    """Helper function to unpack our data into pixell format
+
+    This takes a single submap of data with flat pixels x n_values and unpacks
+    that into an ndmap with n_values x 2D pixels.  The ndmaps are column
+    major, like a FITS image:
+
+        | OOXXXOO
+        | OOXXXOO
+        | OXXXOOO
+        V OXXXOOO
+
+    So a submap covers a range of columns, and can start and end in the middle
+    of a column.
+
+    Args:
+        dist (PixelDistribution):  The pixel dist
+        submap (int):  The global submap index
+        sdata (array):  The data for a single submap
+        endata (ndmap):  The pixell array
+
+    Returns:
+        None
+
+    """
+    enshape = endata.shape
+    n_value = enshape[0]
+    n_cols = enshape[1]
+    n_rows = enshape[2]
+
+    # Global pixel range of this submap
+    s_offset = submap * dist.n_pix_submap
+    s_end = s_offset + dist.n_pix_submap
+
+    # Find which ndmap cols are covered by this submap
+    first_col = s_offset // n_rows
+    last_col = s_end // n_rows
+
+    # Loop over output rows and assign data
+    print(f"endata shape = {endata.shape}")
+    for ival in range(n_value):
+        for col in range(first_col, last_col + 1):
+            pix_offset = col * n_rows
+            row_offset = 0
+            if s_offset > pix_offset:
+                row_offset = s_offset - pix_offset
+            n_copy = n_rows - row_offset
+            if pix_offset + n_copy > s_end:
+                n_copy = s_end - pix_offset
+            sbuf_offset = pix_offset + row_offset - s_offset
+            print(
+                f"endata[{ival}, {col}, {row_offset}:{row_offset+n_copy}] = sdata[{sbuf_offset}:{sbuf_offset+n_copy}, {ival}]",
+                flush=True,
+            )
+            endata[ival, col, row_offset : row_offset + n_copy] = sdata[
+                sbuf_offset : sbuf_offset + n_copy, ival
+            ]
+
+
+def enmap_to_submap(dist, endata, submap, sdata):
+    """Helper function to fill our data from pixell format
+
+    This takes a single submap of data with flat pixels x n_values and fills
+    it from an ndmap with n_values x 2D pixels.
+
+    Args:
+        dist (PixelDistribution):  The pixel dist
+        endata (ndmap):  The pixell array
+        submap (int):  The global submap index
+        sdata (array):  The data for a single submap
+
+    Returns:
+        None
+
+    """
+    enshape = endata.shape
+    n_value = enshape[0]
+    n_cols = enshape[1]
+    n_rows = enshape[2]
+
+    # Global pixel range of this submap
+    s_offset = submap * dist.n_pix_submap
+    s_end = s_offset + dist.n_pix_submap
+
+    # Find which ndmap rows are covered by this submap
+    first_col = s_offset // n_rows
+    last_col = s_end // n_rows
+
+    # Loop over output rows and assign data
+    for ival in range(n_value):
+        for col in range(first_col, last_col + 1):
+            pix_offset = col * n_rows
+            row_offset = 0
+            if s_offset > pix_offset:
+                row_offset = s_offset - pix_offset
+            n_copy = n_cols
+            if pix_offset + n_copy > s_end:
+                n_copy = s_end - pix_offset
+            sbuf_offset = pix_offset + row_offset - s_offset
+            sdata[sbuf_offset : sbuf_offset + n_copy, ival] = endata[
+                ival, col, row_offset : row_offset + n_copy
+            ]
 
 
 @function_timer
@@ -48,38 +153,25 @@ def collect_wcs_submaps(pix, comm_bytes=10000000):
         allowners = np.zeros_like(owners)
         dist.comm.Allreduce(owners, allowners, op=MPI.MIN)
 
-    fdata = None
-    fview = None
+    # Create a pixell map structure for the output
+    endata = None
     if rank == 0:
-        fdata = list()
-        fview = list()
-        for col in range(pix.n_value):
-            fdata.append(pix.storage_class.zeros(dist.n_pix))
-            fview.append(fdata[-1].array())
+        endata = pixell.enmap.zeros((pix.n_value,) + dist.wcs_shape, wcs=dist.wcs)
+
+    n_val_submap = dist.n_pix_submap * pix.n_value
 
     if dist.comm is None:
-        # Just copy our local submaps into the FITS buffers
+        # Just copy our local submaps into the pixell buffer
         for lc, sm in enumerate(dist.local_submaps):
-            global_offset = sm * dist.n_pix_submap
-            n_copy = dist.n_pix_submap
-            if global_offset + n_copy > dist.n_pix:
-                n_copy = dist.n_pix - global_offset
-            for col in range(pix.n_value):
-                fview[col][global_offset : global_offset + n_copy] = pix.data[
-                    lc, 0:n_copy, col
-                ]
+            submap_to_enmap(dist, sm, pix.data[lc], endata)
     else:
-        sendbuf = np.zeros(
-            comm_submap * dist.n_pix_submap * pix.n_value, dtype=pix.dtype
-        )
+        sendbuf = np.zeros(comm_submap * n_val_submap, dtype=pix.dtype)
         sendview = sendbuf.reshape(comm_submap, dist.n_pix_submap, pix.n_value)
 
         recvbuf = None
         recvview = None
         if rank == 0:
-            recvbuf = np.zeros(
-                comm_submap * dist.n_pix_submap * pix.n_value, dtype=pix.dtype
-            )
+            recvbuf = np.zeros(comm_submap * n_val_submap, dtype=pix.dtype)
             recvview = recvbuf.reshape(comm_submap, dist.n_pix_submap, pix.n_value)
 
         submap_off = 0
@@ -91,32 +183,25 @@ def collect_wcs_submaps(pix, comm_bytes=10000000):
                 # at least one submap has some hits.  reduce.
                 for c in range(ncomm):
                     if allowners[submap_off + c] == dist.comm.rank:
+                        print(f"rank {dist.comm.rank}: set sendview[{c}, :, :]")
                         sendview[c, :, :] = pix.data[
                             dist.global_submap_to_local[submap_off + c], :, :
                         ]
                 dist.comm.Reduce(sendbuf, recvbuf, op=MPI.SUM, root=0)
                 if rank == 0:
-                    # copy into FITS buffers
+                    # copy into pixell buffer
                     for c in range(ncomm):
-                        global_offset = (submap_off + c) * dist.n_pix_submap
-                        n_copy = dist.n_pix_submap
-                        if global_offset + n_copy > dist.n_pix:
-                            n_copy = dist.n_pix - global_offset
-                        for col in range(pix.n_value):
-                            fview[col][
-                                global_offset : global_offset + n_copy
-                            ] = recvview[c, 0:n_copy, col]
+                        submap_to_enmap(dist, (submap_off + c), recvview[c], endata)
                 sendbuf.fill(0)
                 if rank == 0:
                     recvbuf.fill(0)
             submap_off += ncomm
-
-    return fdata, fview
+    return endata
 
 
 @function_timer
 def write_wcs_fits(pix, path, comm_bytes=10000000, report_memory=False):
-    """Write pixel data to the FITS primary image
+    """Write pixel data to a FITS image
 
     The data across all processes is assumed to be synchronized (the data for a given
     submap shared between processes is identical).  The submap data is sent to the root
@@ -140,40 +225,22 @@ def write_wcs_fits(pix, path, comm_bytes=10000000, report_memory=False):
     # The distribution
     dist = pix.distribution
 
-    # Extract the WCS info
+    # Check that we have WCS information
     if not hasattr(dist, "wcs"):
         raise RuntimeError("Pixel distribution does not have WCS information")
-    wcs = dist.wcs
 
     rank = 0
     if dist.comm is not None:
         rank = dist.comm.rank
 
-    fdata, fview = collect_submaps(pix, comm_bytes=comm_bytes)
+    endata = collect_wcs_submaps(pix, comm_bytes=comm_bytes)
 
     if rank == 0:
         if os.path.isfile(path):
             os.remove(path)
-        dtypes = [np.dtype(pix.dtype) for x in range(pix.n_value)]
-        if report_memory:
-            mem = memreport(msg="(root node)", silent=True)
-            log.info_rank(f"About to write {path}:  {mem}")
+        endata.write(path, fmt="fits")
 
-        common = wcs.to_header()
-        hdus = af.HDUList()
-        for ext in range(pix.n_value):
-            data = pix.fdata[ext]
-            if len(hdus) == 0:
-                hdus.append(af.PrimaryHDU(data=data, header=common))
-            else:
-                hdus.append(af.ImageHDU(data=data, header=common))
-        hdus.writeto(path)
-
-        del fview
-        for col in range(pix.n_value):
-            fdata[col].clear()
-        del fdata
-
+    del endata
     return
 
 
@@ -199,96 +266,50 @@ def read_wcs_fits(pix, path, ext=0, comm_bytes=10000000):
     if dist.comm is not None:
         rank = dist.comm.rank
 
-    comm_submap = pix.comm_nsubmap(comm_bytes)
-
-    # we make the assumption that FITS binary tables are still stored in
-    # blocks of 2880 bytes just like always...
-    dbytes = pix.dtype.itemsize
-    rowbytes = pix.n_value * dbytes
-    optrows = 2880 // rowbytes
-
-    # get a tuple of all columns in the table.  We choose memmap here so
-    # that we can (hopefully) read through all columns in chunks such that
-    # we only ever have a couple FITS blocks in memory.
-    fdata = None
+    endata = None
     if rank == 0:
-        # Check that the file is in expected format
-        errors = ""
-        h = hp.fitsfunc.pf.open(path, "readonly")
-        nside = hp.npix2nside(dist.n_pix)
-        nside_map = h[1].header["nside"]
-        if nside_map != nside:
-            errors += "Wrong NSide: {} has {}, expected {}\n" "".format(
-                path, nside_map, nside
-            )
-        map_nnz = h[1].header["tfields"]
-        if map_nnz != pix.n_value:
-            errors += "Wrong number of columns: {} has {}, expected {}\n" "".format(
-                path, map_nnz, pix.n_value
-            )
-        h.close()
-        if len(errors) != 0:
-            raise RuntimeError(errors)
-        # Now read the map
-        fdata = hp.read_map(
-            path,
-            field=tuple([x for x in range(pix.n_value)]),
-            dtype=[pix.dtype for x in range(pix.n_value)],
-            memmap=True,
-            nest=nest,
-            verbose=False,
-        )
-        if pix.n_value == 1:
-            fdata = (fdata,)
+        # Load from disk
+        endata = pixell.enmap.read_map(path, fmt="fits")
 
-    buf = np.zeros(comm_submap * dist.n_pix_submap * pix.n_value, dtype=pix.dtype)
-    view = buf.reshape(comm_submap, dist.n_pix_submap, pix.n_value)
+    # Check dimensions
+    enpix = 1
+    for s in endata.shape:
+        enpix *= s
+    tot_pix = dist.n_pix * pix.n_value
+    if tot_pix != enpix:
+        raise RuntimeError(f"Input file has {enpix} pixel values instead of {tot_pix}")
 
-    in_off = 0
-    out_off = 0
-    submap_off = 0
+    n_val_submap = dist.n_pix_submap * pix.n_value
 
-    rows = optrows
-    while in_off < dist.n_pix:
-        if in_off + rows > dist.n_pix:
-            rows = dist.n_pix - in_off
-        # is this the last block for this communication?
-        islast = False
-        copyrows = rows
-        if out_off + rows > (comm_submap * dist.n_pix_submap):
-            copyrows = (comm_submap * dist.n_pix_submap) - out_off
-            islast = True
+    if dist.comm is None:
+        # Single process, just copy into place
+        for sm in range(dist.n_submap):
+            if sm in dist.local_submaps:
+                loc = dist.global_submap_to_local[sm]
+                enmap_to_submap(dist, endata, sm, pix.data[loc])
+    else:
+        # One reader broadcasts
+        comm_submap = pix.comm_nsubmap(comm_bytes)
 
-        if rank == 0:
-            for col in range(pix.n_value):
-                coloff = (out_off * pix.n_value) + col
-                buf[coloff : coloff + (copyrows * pix.n_value) : pix.n_value] = fdata[
-                    col
-                ][in_off : in_off + copyrows]
-
-        out_off += copyrows
-        in_off += copyrows
-
-        if islast:
-            if dist.comm is not None:
-                dist.comm.Bcast(buf, root=0)
-            # loop over these submaps, and copy any that we are assigned
-            for sm in range(submap_off, submap_off + comm_submap):
+        buf = np.zeros(comm_submap * n_val_submap, dtype=pix.dtype)
+        view = buf.reshape(comm_submap, dist.n_pix_submap, pix.n_value)
+        submap_off = 0
+        ncomm = comm_submap
+        while submap_off < dist.n_submap:
+            if submap_off + ncomm > dist.n_submap:
+                ncomm = dist.n_submap - submap_off
+            if rank == 0:
+                # Fill the bcast buffer
+                for c in range(ncomm):
+                    enmap_to_submap(dist, endata, (submap_off + c), view[c])
+            # Broadcast
+            dist.comm.Bcast(buf, root=0)
+            # Copy these submaps into local data
+            for sm in range(submap_off, submap_off + ncomm):
                 if sm in dist.local_submaps:
                     loc = dist.global_submap_to_local[sm]
                     pix.data[loc, :, :] = view[sm - submap_off, :, :]
-            out_off = 0
             submap_off += comm_submap
             buf.fill(0)
-            islast = False
 
-    # flush the remaining buffer
-    if out_off > 0:
-        if dist.comm is not None:
-            dist.comm.Bcast(buf, root=0)
-        # loop over these submaps, and copy any that we are assigned
-        for sm in range(submap_off, submap_off + comm_submap):
-            if sm in dist.local_submaps:
-                loc = dist.global_submap_to_local[sm]
-                pix.data[loc, :, :] = view[sm - submap_off, :, :]
     return

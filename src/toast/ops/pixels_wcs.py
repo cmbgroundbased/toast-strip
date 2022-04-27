@@ -2,28 +2,20 @@
 # All rights reserved.  Use of this source code is governed by
 # a BSD-style license that can be found in the LICENSE file.
 
-import traitlets
-
-import numpy as np
-
-from astropy import units as u
-
 import warnings
 
-from pixell import wcsutils
+import traitlets
+import numpy as np
+from astropy import units as u
+import pixell
+import pixell.enmap
 
 from ..utils import Environment, Logger
-
 from ..traits import trait_docs, Int, Unicode, Bool, Instance, Tuple
-
 from ..timing import function_timer
-
 from .. import qarray as qa
-
 from ..pixels import PixelDistribution
-
 from .operator import Operator
-
 from .delete import Delete
 
 
@@ -156,11 +148,19 @@ class PixelsWCS(Operator):
     def _reset_wcs(self, change):
         # (Re-)initialize the WCS projection when one of these traits change.
         # Current values:
-        proj = self.wcs_projection
+        proj = str(self.wcs_projection)
         center = self.wcs_center
+        if center is not None:
+            center = tuple(center)
         bounds = self.wcs_bounds
+        if bounds is not None:
+            bounds = tuple(bounds)
         dims = self.wcs_dimensions
+        if dims is not None:
+            dims = tuple(dims)
         res = self.wcs_resolution
+        if res is not None:
+            res = tuple(res)
         pos = None
         if center is not None:
             pos = center
@@ -212,20 +212,14 @@ class PixelsWCS(Operator):
                     [pos[1][0].to_value(u.degree), pos[1][1].to_value(u.degree)],
                 ]
             )
-        if proj == "CAR":
-            self.wcs = wcsutils.car(pos, res=res, shape=shape)
-        elif proj == "CEA":
-            self.wcs = wcsutils.cea(pos, res=res, shape=shape)
-        elif proj == "MER":
-            self.wcs = wcsutils.mer(pos, res=res, shape=shape)
-        elif proj == "ZEA":
-            self.wcs = wcsutils.zea(pos, res=res, shape=shape)
-        elif proj == "TAN":
-            self.wcs = wcsutils.tan(pos, res=res, shape=shape)
-        elif proj == "AIR":
-            self.wcs = wcsutils.air(pos, res=res, shape=shape)
-        else:
-            raise RuntimeError("Unsupported projection")
+
+        print(f"geometry({pos}, {res}, {proj})")
+
+        self.wcs = pixell.wcsutils.build(pos, res, shape, rowmajor=True, system=proj)
+        print(self.wcs)
+        self.wcs_shape = self.wcs_dimensions
+        # self.wcs_shape, self.wcs = pixell.enmap.geometry(pos=pos, res=res, proj=proj)
+
         self.pix_ra = int(np.round(2 * self.wcs.wcs.crpix[0] - 1))
         self.pix_dec = int(np.round(2 * self.wcs.wcs.crpix[1] - 1))
         self._n_pix = self.pix_ra * self.pix_dec
@@ -321,17 +315,28 @@ class PixelsWCS(Operator):
                     )
                     flags &= self.detector_pointing.shared_flag_mask
 
+                print("bore = ", views.shared[self.detector_pointing.boresight][vw])
+
                 for det in dets:
                     # Timestream of detector quaternions
                     quats = views.detdata[quats_name][vw][det]
                     view_samples = len(quats)
+                    print("quats = ", quats)
 
                     theta, phi = qa.to_position(quats)
-                    rdpix = self.wcs.wcs_world2pix(
-                        np.column_stack([np.rad2deg(phi), 90 - np.rad2deg(theta)]), 0
+                    print("theta = ", theta)
+                    print("phi = ", phi)
+                    world_in = np.column_stack(
+                        [np.rad2deg(phi), 90 - np.rad2deg(theta)]
                     )
+                    print("world_in = ", world_in)
+                    rdpix = self.wcs.wcs_world2pix(world_in, 0)
+                    print("rdpix = ", rdpix)
                     views.detdata[self.pixels][vw][det] = (
                         rdpix[:, 0] * self.pix_dec + rdpix[:, 1]
+                    )
+                    print(
+                        f"{self.pixels}[{vw}][{det}] = {views.detdata[self.pixels][vw][det]}"
                     )
 
                     if self.create_dist is not None:
@@ -359,6 +364,12 @@ class PixelsWCS(Operator):
             )
             # Store a copy of the WCS information in the distribution object
             data[self.create_dist].wcs = self.wcs.deepcopy()
+            data[self.create_dist].wcs_shape = tuple(self.wcs_shape)
+            # data[self.create_dist].wcs_projection = self.wcs_projection
+            # data[self.create_dist].wcs_center = tuple(self.wcs_center)
+            # data[self.create_dist].wcs_bounds = tuple(self.wcs_bounds)
+            # data[self.create_dist].wcs_dimensions = tuple(self.wcs_dimensions)
+            # data[self.create_dist].wcs_resolution = tuple(self.wcs_resolution)
         return
 
     def _requires(self):

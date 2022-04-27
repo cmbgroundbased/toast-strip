@@ -5,21 +5,16 @@
 import os
 
 import numpy as np
-
 from astropy import units as u
 
 from .. import ops as ops
-
 from .. import qarray as qa
-
 from ..intervals import Interval, IntervalList
-
 from ..observation import default_values as defaults
 from ..observation import Observation
-
 from ..data import Data
-
-from ..pixels_io import write_wcs_fits
+from ..pixels_io_wcs import write_wcs_fits
+from ..vis import set_matplotlib_backend
 
 from ._helpers import (
     create_outdir,
@@ -28,7 +23,6 @@ from ._helpers import (
     create_space_telescope,
     create_fake_sky,
 )
-
 from .mpi import MPITestCase
 
 
@@ -47,7 +41,7 @@ class PointingWCSTest(MPITestCase):
         )
 
         detpointing_radec = ops.PointingDetectorSimple(
-            boresight=defaults.boresight_radec, quats="quats_radec"
+            boresight=defaults.boresight_radec
         )
 
         pixels = ops.PixelsWCS(
@@ -61,17 +55,29 @@ class PointingWCSTest(MPITestCase):
         npix_ra = pixels.pix_ra
         npix_dec = pixels.pix_dec
         px = list()
-        for ra in range(npix_ra):
+        for dec in range(npix_dec):
             px.extend(
                 np.column_stack(
                     [
-                        ra * np.ones(npix_dec, dtype=np.int64),
-                        np.arange(npix_dec, dtype=np.int64),
+                        dec * np.ones(npix_ra),
+                        np.arange(npix_ra),
                     ]
                 ).tolist()
             )
-        coord = wcs.wcs_pix2world(px, 0)
+        px = np.array(px, dtype=np.float64)
+        print("px = ", px[:10])
+        print(wcs)
+        print(wcs.wcs.ctype)
+        print(wcs.wcs.crpix)
+        print(wcs.wcs.crval)
+        print(wcs.wcs.cdelt)
+        try:
+            coord = wcs.wcs_pix2world(np.array(px[:10]), 0)
+        except:
+            raise
+        print("coord = ", coord)
         bore = qa.from_position(coord[:, 1], coord[:, 0])
+        print("bore = ", bore)
 
         nsamp = npix_ra * npix_dec
         data.obs.append(Observation(toastcomm, tele, n_samples=nsamp))
@@ -88,42 +94,62 @@ class PointingWCSTest(MPITestCase):
 
         pixels.apply(data)
 
-        outfile = os.path.join(self.outdir, "default.fits")
+        # print(data.obs[0].shared[defaults.boresight_radec].data)
+        # print(data.obs[0].detdata[pixels.pixels])
 
-    # def test_mapmaking(self):
-    #     rank = 0
-    #     if self.comm is not None:
-    #         rank = self.comm.rank
+        # outfile = os.path.join(self.outdir, "default.fits")
+        # write_wcs_fits()
 
-    #     # Create fake observing of a small patch
-    #     data = create_ground_data(self.comm)
+    def test_mapmaking(self):
+        rank = 0
+        if self.comm is not None:
+            rank = self.comm.rank
 
-    #     # Simple detector pointing
-    #     detpointing_radec = ops.PointingDetectorSimple(
-    #         boresight=defaults.boresight_radec, quats="quats_radec"
-    #     )
+        # Create fake observing of a small patch
+        data = create_ground_data(self.comm)
+        print("create boresight: ", data.obs[0].shared[defaults.boresight_radec])
 
-    #     # Compute pixels
-    #     pixels = ops.PixelsWCS(
-    #         detector_pointing=detpointing_radec,
-    #         use_astropy=True,
-    #     )
+        # Simple detector pointing
+        detpointing_radec = ops.PointingDetectorSimple(
+            boresight=defaults.boresight_radec,
+        )
 
-    #     weights = ops.StokesWeights(
-    #         mode="IQU",
-    #         hwp_angle=defaults.hwp_angle,
-    #         detector_pointing=detpointing_radec,
-    #     )
-    #     weights.apply(data)
+        # Compute pixels
+        pixels = ops.PixelsWCS(
+            detector_pointing=detpointing_radec,
+            use_astropy=True,
+            create_dist="pixel_dist",
+        )
+        pixels.apply(data)
+        print(data["pixel_dist"].wcs, flush=True)
 
-    #     # Create fake polarized sky pixel values locally
-    #     create_fake_sky(data, "pixel_dist", "fake_map")
+        weights = ops.StokesWeights(
+            mode="IQU",
+            hwp_angle=defaults.hwp_angle,
+            detector_pointing=detpointing_radec,
+        )
+        weights.apply(data)
 
-    #     # Scan map into timestreams
-    #     scanner = ops.ScanMap(
-    #         det_data=defaults.det_data,
-    #         pixels=pixels.pixels,
-    #         weights=weights.weights,
-    #         map_key="fake_map",
-    #     )
-    #     scanner.apply(data)
+        # Create fake polarized sky pixel values locally
+        create_fake_sky(data, "pixel_dist", "fake_map")
+
+        # Write it out
+        outfile = os.path.join(self.outdir, "mapmaking_input.fits")
+        write_wcs_fits(data["fake_map"], outfile)
+        if rank == 0:
+            set_matplotlib_backend()
+            import pixell
+            import pixell.enmap
+            import pixell.enplot
+
+            endata = pixell.enmap.read_map(outfile)
+            pixell.enplot.plot(outfile)
+
+        # # Scan map into timestreams
+        # scanner = ops.ScanMap(
+        #     det_data=defaults.det_data,
+        #     pixels=pixels.pixels,
+        #     weights=weights.weights,
+        #     map_key="fake_map",
+        # )
+        # scanner.apply(data)
