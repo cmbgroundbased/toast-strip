@@ -11,6 +11,7 @@ from astropy import units as u
 
 from .. import ops as ops
 from .. import templates
+from ..accelerator import accel_enabled
 from ..noise import Noise
 from ..observation import default_values as defaults
 from ..pixels import PixelData, PixelDistribution
