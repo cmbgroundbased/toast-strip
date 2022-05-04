@@ -6,11 +6,11 @@ on:
   push:
     branches:
       - master
-      #- toast3
+      - toast3
   pull_request:
     branches:
       - master
-      #- toast3
+      - toast3
 
 # Uncomment here for production and comment out push / PR above.
 # on:
